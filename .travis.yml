@@ -1,0 +1,27 @@
+language: c
+os:
+  - linux
+  - osx
+
+compiler:
+  - gcc
+
+install:
+  - set -e
+  - git clone -b devel --depth 1 https://github.com/nim-lang/Nim.git
+  - cd Nim
+  - git clone --depth 1 https://github.com/nim-lang/csources.git
+  - cd csources
+  - sh build.sh
+  - cd ..
+  - bin/nim c koch
+  - ./koch boot -d:release
+  - ./koch nimble
+  - export PATH=$(pwd)/bin:$PATH
+  - cd ..
+  - if [[ $TRAVIS_OS_NAME == 'osx' ]]; then rvm get head; fi # fix osx ``shell_session_update: command not found``
+
+script:
+  - nim test
+  
+  
