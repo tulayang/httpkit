@@ -3,7 +3,7 @@ import httpkit, asyncnet, asyncdispatch
 proc processClient(client: AsyncSocket) {.async.} =
   var parser = initHttpParser()
   var reqBuf = newString(1024)
-  var resBuf = initGrowBuffer()
+  var resBuf = initHttpBuffer()
   GC_ref(reqBuf)
   block parsing:
     while true:
