@@ -1,9 +1,15 @@
+#    HttpKit - An efficient HTTP tool suite written in pure nim
+#        (c) Copyright 2017 Wang Tong
+#
+#    See the file "LICENSE", included in this distribution, for
+#    details about the copyright.
+
 import httpkit, asyncnet, asyncdispatch
 
 proc processClient(client: AsyncSocket) {.async.} =
-  var parser = initHttpParser()
+  var parser = initRequestParser()
   var reqBuf = newString(1024)
-  var resBuf = initHttpBuffer()
+  var resBuf = initResponseBuffer()
   GC_ref(reqBuf)
   block parsing:
     while true:
@@ -14,38 +20,32 @@ proc processClient(client: AsyncSocket) {.async.} =
         break parsing
       for state in parser.parse(reqBuf.cstring, n):
         case state
-        of psRequest:
+        of statReqHead:
           discard
-        of psData:
+        of statReqData:
           let (base, size) = parser.getData()
-        of psDataChunked:
+        of statReqDataChunked:
           discard
-        of psDataEnd:
+        of statReqDataEnd:
           resBuf.writeHead(200, {
             "Content-Length": "11",
             "Connection": "keep-alive"
           })
           resBuf.write("hello world")
-          # resBuf.writeChunk("hello world")
-          # await client.send(resBuf)
-          # resBuf.clear()
-
-          # resBuf.writeChunk("hello world")
-          # resBuf.writeChunkTail()
           await client.send(resBuf)
           resBuf.clear()
           if not parser.keepAlive:
             client.close()
             break parsing
           # keep-alive or close return 
-        of psExpect100Continue:
+        of statReqExpect100Continue:
           await client.send("HTTP/1.1 100 Continue\c\L\c\L")
-        of psExceptOther:
+        of statReqExceptOther:
           await client.send("HTTP/1.1 417 Expectation Failed\c\L\c\L")
-        of psUpgrade:
+        of statReqUpgrade:
           client.close()
           break parsing
-        of psError:
+        of statReqError:
           client.close()
           break parsing
   GC_unref(reqBuf)

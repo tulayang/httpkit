@@ -7,11 +7,13 @@
 import os, net, asyncnet, asyncdispatch, nativesockets, util
 
 type
-  HttpBuffer* = object
+  HttpBuffer* = object of RootObj
     base: string
     initialSize: int
     size: int
     length: int
+  RequestBuffer* = object of HttpBuffer
+  ResponseBuffer* = object of HttpBuffer
 
 proc toChunkSize*(x: BiggestInt): string =
   assert x >= 0
@@ -29,11 +31,17 @@ proc toChunkSize*(x: BiggestInt): string =
   for i in 5-m..<5:
     add(result, s[i])
 
-proc initHttpBuffer*(initialSize = 1024): HttpBuffer =
+template initHttpBufferImpl() {.dirty.} =
   result.initialSize = initialSize
   result.size = initialSize
   result.base = newString(initialSize)
   result.length = 0
+
+proc initRequestBuffer*(initialSize = 1024): RequestBuffer =
+  initHttpBufferImpl
+
+proc initResponseBuffer*(initialSize = 1024): ResponseBuffer =
+  initHttpBufferImpl
 
 proc increase(x: var HttpBuffer, size: int) =
   let size = x.size
@@ -93,12 +101,22 @@ proc writeChunkTail*(x: var HttpBuffer) =
   copyMem(offsetChar(x.base.cstring, x.length), tail[0].addr, 5)
   x.length.inc(5)
 
-proc writeHead*(x: var HttpBuffer, statusCode: int) =
+proc writeHead*(x: var ResponseBuffer, statusCode: int) =
   x.write("HTTP/1.1 " & $statusCode & " OK\c\LContent-Length: 0\c\L\c\L")
 
-proc writeHead*(x: var HttpBuffer, statusCode: int, 
+proc writeHead*(x: var ResponseBuffer, statusCode: int, 
                 headers: openarray[tuple[key, value: string]]) =
   x.write("HTTP/1.1 " & $statusCode & " OK\c\L")
+  for it in headers:
+    x.write(it.key & ": " & it.value & "\c\L")
+  x.write("\c\L")
+
+proc writeHead*(x: var RequestBuffer, reqMethod: string, url: string) =
+  x.write(reqMethod & " " & url & " HTTP/1.1\c\L")#Content-Length: 0\c\L\c\L")
+
+proc writeHead*(x: var RequestBuffer, reqMethod: string, url: string, 
+                headers: openarray[tuple[key, value: string]]) =
+  x.write(reqMethod & " " & url & " HTTP/1.1\c\L")#Content-Length: 0\c\L\c\L")
   for it in headers:
     x.write(it.key & ": " & it.value & "\c\L")
   x.write("\c\L")

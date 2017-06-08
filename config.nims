@@ -25,7 +25,7 @@ template runBenchmark(name: string) =
     mkDir "bin"
     --r
     --o:"""bin/""" name
-    --verbosity:0
+    --verbosity:1
     --path:"""."""
     setCommand "c", "benchmark/" & name & ".nim"
 

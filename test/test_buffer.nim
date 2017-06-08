@@ -8,14 +8,14 @@ import unittest, httpkit, asyncdispatch, asyncnet
 
 suite "HttpBuffer":
   test "write a string":
-    var buf = initHttpBuffer(32)  
+    var buf = initResponseBuffer(32)  
     buf.write("abc")
     check buf.len == 3
     buf.clear()
     check buf.len == 0
 
   test "write a chunk":
-    var buf = initHttpBuffer(32)  
+    var buf = initResponseBuffer(32)  
     buf.writeChunk("hello")
     #buf.writeChunkTail()
     var base: string
@@ -23,14 +23,14 @@ suite "HttpBuffer":
     check base[0..9] == "5\c\Lhello\c\L"
 
   test "write a chunk tail":
-    var buf = initHttpBuffer(32)  
+    var buf = initResponseBuffer(32)  
     buf.writeChunkTail()
     var base: string
     shallowCopyBase(buf, base)
     check base[0..4] == "0\c\L\c\L"
 
   test "write a head":  
-    var buf = initHttpBuffer(32)  
+    var buf = initResponseBuffer(32)  
     buf.writeHead(200, {
       "Except": "100-continue"
     })

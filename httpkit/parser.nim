@@ -55,53 +55,39 @@ type
     ppInit, ppProtocol, ppHeaders, ppCheck, ppUpgrade, ppData, ppChunkBegin, ppChunk, 
     ppDataEnd, ppError
 
-  ParseState* = enum
-    psRequest, psData, psDataChunked, psDataEnd, psExpect100Continue, psExceptOther, 
-    psUpgrade, psError
-                                                 
+  ParseState = enum
+    statHead, statData, statDataChunked, statDataEnd, statUpgrade, statError
+
   Chunk = object
     base: pointer
     size: int
     pos: int
     dataSize: int
 
-  HttpParser* = object
-    reqMethod: string
-    url: string
-    protocol: tuple[orig: string, major, minor: int]
-    headers: StringTableRef
-    chunk: Chunk
-    line: Line
-    contentLength: int
-    chunkLength: int
-    headerLimit: int
-    headerNums: int
-    chunkedTransferEncoding: bool
-    keepAlive*: bool
-    phase: ParsePhase
-    state: ParseState
+  IHttpParser = concept var p
+    p.parseOnInitHead()
+    p.parseProtocol()
+    p.chunk is Chunk
+    p.line is Line
+    p.contentLength is int
+    p.chunkLength is int
+    p.headerLimit is int
+    p.headerNums is int
+    p.chunkedTransferEncoding is bool
+    p.keepAlive is bool
+    p.phase is ParsePhase
 
 template chunk: untyped = parser.chunk
 template line: untyped = parser.line
 
-proc initHttpParser*(lineLimit = 1024, headerLimit = 1024): HttpParser =
-  result.headers = newStringTable(modeCaseInsensitive)
-  result.line = initLine(lineLimit)
-  result.headerLimit = headerLimit
-
-proc pick(parser: var HttpParser, buf: pointer, size: int) =
+proc pick(parser: var IHttpParser, buf: pointer, size: int) =
   chunk.base = buf
   chunk.size = size
   chunk.pos = 0
   chunk.dataSize = 0
 
-proc parseOnInit(parser: var HttpParser) =
-  parser.reqMethod = ""
-  parser.url = ""
-  parser.protocol.orig = ""
-  parser.protocol.major = 0
-  parser.protocol.minor = 0 
-  parser.headers.clear(modeCaseInsensitive) 
+proc parseOnInit(parser: var IHttpParser) = 
+  parser.parseOnInitHead()
   parser.line.clear()
   parser.headerNums = 0
   parser.contentLength = 0
@@ -109,19 +95,19 @@ proc parseOnInit(parser: var HttpParser) =
   parser.chunkedTransferEncoding = false
   parser.keepAlive = false
 
-proc parseOnProtocol(parser: var HttpParser): bool =
+proc parseOnProtocol(parser: var IHttpParser): bool =
   while chunk.pos < chunk.size:
     let n = line.read(offsetChar(chunk.base, chunk.pos), chunk.size - chunk.pos)
     chunk.pos.inc(n)
     if line.state == lpOK:
-      parseRequestProtocol(line.base, parser.reqMethod, parser.url, parser.protocol)
+      parser.parseProtocol()
       line.clear() 
       return true
     else:
       assert chunk.pos == chunk.size 
   return false
 
-proc parseOnHeaders(parser: var HttpParser): bool = 
+proc parseOnHeaders(parser: var IHttpParser): bool = 
   while chunk.pos < chunk.size:
     let n = line.read(offsetChar(chunk.base, chunk.pos), chunk.size - chunk.pos)
     chunk.pos.inc(n)
@@ -138,7 +124,7 @@ proc parseOnHeaders(parser: var HttpParser): bool =
       assert chunk.pos == chunk.size
   return false
 
-proc parseOnCheck(parser: var HttpParser) = 
+proc parseOnCheck(parser: var IHttpParser) = 
   try:
     parser.contentLength = parseInt(parser.headers.getOrDefault("Content-Length"))
     if parser.contentLength < 0:
@@ -153,7 +139,7 @@ proc parseOnCheck(parser: var HttpParser) =
       normalize(parser.headers.getOrDefault("Connection")) == "keep-alive"):
     parser.keepAlive = true
 
-iterator parse*(parser: var HttpParser, buf: pointer, size: int): ParseState =
+iterator parse0(parser: var IHttpParser, buf: pointer, size: int): ParseState =
   parser.pick(buf, size)
   while true:
     case parser.phase
@@ -183,12 +169,7 @@ iterator parse*(parser: var HttpParser, buf: pointer, size: int): ParseState =
       if parser.headers.getOrDefault("Connection") == "Upgrade":
         parser.phase = ppUpgrade
         continue
-      if parser.headers.hasKey("Expect"):
-        if "100-continue" in parser.headers["Expect"]: 
-          yield psExpect100Continue
-        else:
-          yield psExceptOther
-      yield psRequest
+      yield statHead
       if parser.chunkedTransferEncoding:
         parser.phase = ppChunkBegin
         line.clear()
@@ -202,12 +183,12 @@ iterator parse*(parser: var HttpParser, buf: pointer, size: int): ParseState =
         break
       elif remained < parser.contentLength:
         chunk.dataSize = remained
-        yield psData
+        yield statData
         chunk.pos.inc(remained)
         parser.contentLength.dec(remained)
       else:
         chunk.dataSize = parser.contentLength
-        yield psData
+        yield statData
         chunk.pos.inc(parser.contentLength)
         parser.contentLength.dec(parser.contentLength)
         parser.phase = ppDataEnd
@@ -230,7 +211,7 @@ iterator parse*(parser: var HttpParser, buf: pointer, size: int): ParseState =
         break
     of ppChunk:
       if parser.chunkLength <= 0:
-        yield psDataChunked
+        yield statDataChunked
         parser.phase = ppChunkBegin
         line.clear()
       elif parser.chunkLength == 1: # tail   \n
@@ -256,30 +237,144 @@ iterator parse*(parser: var HttpParser, buf: pointer, size: int): ParseState =
           break
         elif remained <= parser.chunkLength - 2:
           chunk.dataSize = remained
-          yield psData
+          yield statData
           chunk.pos.inc(remained)
           parser.chunkLength.dec(remained)
         else:
           chunk.dataSize = parser.chunkLength - 2
-          yield psData
+          yield statData
           chunk.pos.inc(parser.chunkLength - 2)
           parser.chunkLength.dec(parser.chunkLength - 2)
     of ppDataEnd:
       parser.phase = ppInit
-      yield psDataEnd
+      yield statDataEnd
     of ppUpgrade:
-      yield psUpgrade
+      yield statUpgrade
       break
     of ppError:
-      yield psError
+      yield statError
       break
 
-proc getData*(parser: var HttpParser): tuple[base: pointer, size: int] =
-  result.base = offsetChar(chunk.base, chunk.pos)
+type
+  RequestState* = enum
+    statReqHead, statReqData, statReqDataChunked, statReqDataEnd,
+    statReqExpect100Continue, statReqExceptOther, statReqUpgrade, statReqError
+
+  ResponseState* = enum
+    statResHead, statResData, statResDataChunked, statResDataEnd, statResUpgrade, statResError
+
+  HttpParser* = object of RootObj
+    chunk: Chunk
+    line: Line
+    contentLength: int
+    chunkLength: int
+    headerLimit: int
+    headerNums: int
+    chunkedTransferEncoding: bool
+    keepAlive*: bool
+    phase: ParsePhase
+
+  RequestParser* = object of HttpParser
+    reqMethod: string
+    url: string
+    protocol: tuple[orig: string, major, minor: int]
+    headers: StringTableRef
+
+  ResponseParser* = object of HttpParser
+    statusCode: int
+    statusMessage: string  
+    protocol: tuple[orig: string, major, minor: int]
+    headers: StringTableRef
+
+template initHttpParserImpl(lineLimit = 1024, headerLimit = 1024) {.dirty.} =
+  result.headers = newStringTable(modeCaseInsensitive)
+  result.line = initLine(lineLimit)
+  result.headerLimit = headerLimit
+
+proc initRequestParser*(lineLimit = 1024, headerLimit = 1024): RequestParser =
+  initHttpParserImpl(lineLimit, headerLimit)
+
+proc initResponseParser*(lineLimit = 1024, headerLimit = 1024): ResponseParser =
+  initHttpParserImpl(lineLimit, headerLimit)
+
+proc parseOnInitHead(parser: var RequestParser) {.inline.} = 
+  parser.reqMethod = ""
+  parser.url = "" 
+  parser.protocol.orig = ""
+  parser.protocol.major = 0
+  parser.protocol.minor = 0
+  parser.headers.clear(modeCaseInsensitive) 
+
+proc parseOnInitHead(parser: var ResponseParser) {.inline.} = 
+  parser.statusCode = 200
+  parser.statusMessage = ""
+  parser.protocol.orig = ""
+  parser.protocol.major = 0
+  parser.protocol.minor = 0
+  parser.headers.clear(modeCaseInsensitive) 
+
+proc parseProtocol(parser: var RequestParser) {.inline.} =
+  parseRequestProtocol(line.base, parser.reqMethod, parser.url, parser.protocol)
+
+proc parseProtocol(parser: var ResponseParser) {.inline.} = 
+  parseResponseProtocol(line.base, parser.statusCode, parser.statusMessage, parser.protocol)
+
+iterator parse*(parser: var RequestParser, buf: pointer, size: int): RequestState =
+  for state in parser.parse0(buf, size):
+    case state
+    of statHead: 
+      if parser.headers.hasKey("Expect"):
+        if "100-continue" in parser.headers["Expect"]: 
+          yield statReqExpect100Continue
+        else:
+          yield statReqExceptOther
+      yield statReqHead
+    of statData: yield statReqData
+    of statDataChunked: yield statReqDataChunked
+    of statDataEnd: yield statReqDataEnd
+    of statUpgrade: yield statReqUpgrade
+    of statError: yield statReqError
+
+iterator parse*(parser: var ResponseParser, buf: pointer, size: int): ResponseState =
+  for state in parser.parse0(buf, size):
+    case state
+    of statHead: 
+      yield statResHead
+    of statData: yield statResData
+    of statDataChunked: yield statResDataChunked
+    of statDataEnd: yield statResDataEnd
+    of statUpgrade: yield statResUpgrade
+    of statError: yield statResError
+
+proc getHead*(parser: RequestParser): tuple[
+  reqMethod: string, 
+  url: string,
+  protocol: tuple[orig: string, major, minor: int], 
+  headers: StringTableRef
+] =
+  result.reqMethod = parser.reqMethod 
+  result.url = parser.url
+  result.protocol = parser.protocol
+  result.headers = parser.headers
+  
+proc getHead*(parser: ResponseParser): tuple[
+  statusCode: int, 
+  statusMessage: string,
+  protocol: tuple[orig: string, major, minor: int], 
+  headers: StringTableRef
+] =
+  result.statusCode = parser.statusCode
+  result.statusMessage = parser.statusMessage
+  result.protocol = parser.protocol
+  result.headers = parser.headers
+
+proc getData*(parser: RequestParser | ResponseParser): tuple[offset: int, size: int] =
+  result.offset = chunk.pos
   result.size = chunk.dataSize
 
-proc getRemainPacket*(parser: var HttpParser): tuple[base: pointer, size: int] =
-  result.base = offsetChar(chunk.base, chunk.pos)
+proc getRemainPacket*(parser: RequestParser | ResponseParser): tuple[offset: int, size: int] =
+  result.offset = chunk.pos
   result.size = chunk.size - chunk.pos
+
 
 
