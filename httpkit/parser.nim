@@ -115,7 +115,7 @@ proc parseOnHeaders(parser: var IHttpParser): bool =
       if line.base == "":
         line.clear()
         return true
-      parseHeader(line.base, parser.headers)
+      parseHeader(line.base, parser.head.headers)
       line.clear() 
       parser.headerNums.inc(1)
       if parser.headerNums > parser.headerLimit:
@@ -126,17 +126,17 @@ proc parseOnHeaders(parser: var IHttpParser): bool =
 
 proc parseOnCheck(parser: var IHttpParser) = 
   try:
-    parser.contentLength = parseInt(parser.headers.getOrDefault("Content-Length"))
+    parser.contentLength = parseInt(parser.head.headers.getOrDefault("Content-Length"))
     if parser.contentLength < 0:
       parser.contentLength = 0
   except:
     parser.contentLength = 0
-  if parser.headers.getOrDefault("Transfer-Encoding") == "bufed":
+  if parser.head.headers.getOrDefault("Transfer-Encoding") == "bufed":
     parser.chunkedTransferEncoding = true
-  if (parser.protocol.major == 1 and parser.protocol.minor == 1 and
-      normalize(parser.headers.getOrDefault("Connection")) != "close") or
-     (parser.protocol.major == 1 and parser.protocol.minor == 0 and
-      normalize(parser.headers.getOrDefault("Connection")) == "keep-alive"):
+  if (parser.head.protocol.major == 1 and parser.head.protocol.minor == 1 and
+      normalize(parser.head.headers.getOrDefault("Connection")) != "close") or
+     (parser.head.protocol.major == 1 and parser.head.protocol.minor == 0 and
+      normalize(parser.head.headers.getOrDefault("Connection")) == "keep-alive"):
     parser.keepAlive = true
 
 iterator parse0(parser: var IHttpParser, buf: pointer, size: int): ParseState =
@@ -166,7 +166,7 @@ iterator parse0(parser: var IHttpParser, buf: pointer, size: int): ParseState =
         parser.phase = ppError
     of ppCheck:
       parser.parseOnCheck()
-      if parser.headers.getOrDefault("Connection") == "Upgrade":
+      if parser.head.headers.getOrDefault("Connection") == "Upgrade":
         parser.phase = ppUpgrade
         continue
       yield statHead
@@ -274,20 +274,26 @@ type
     keepAlive*: bool
     phase: ParsePhase
 
-  RequestParser* = object of HttpParser
+  RequestHead* = tuple
     reqMethod: string
     url: string
     protocol: tuple[orig: string, major, minor: int]
     headers: StringTableRef
 
-  ResponseParser* = object of HttpParser
+  ResponseHead* = tuple
     statusCode: int
     statusMessage: string  
     protocol: tuple[orig: string, major, minor: int]
     headers: StringTableRef
 
+  RequestParser* = object of HttpParser
+    head: RequestHead
+
+  ResponseParser* = object of HttpParser
+    head: ResponseHead 
+
 template initHttpParserImpl(lineLimit = 1024, headerLimit = 1024) {.dirty.} =
-  result.headers = newStringTable(modeCaseInsensitive)
+  result.head.headers = newStringTable(modeCaseInsensitive)
   result.line = initLine(lineLimit)
   result.headerLimit = headerLimit
 
@@ -298,33 +304,33 @@ proc initResponseParser*(lineLimit = 1024, headerLimit = 1024): ResponseParser =
   initHttpParserImpl(lineLimit, headerLimit)
 
 proc parseOnInitHead(parser: var RequestParser) {.inline.} = 
-  parser.reqMethod = ""
-  parser.url = "" 
-  parser.protocol.orig = ""
-  parser.protocol.major = 0
-  parser.protocol.minor = 0
-  parser.headers.clear(modeCaseInsensitive) 
+  parser.head.reqMethod = ""
+  parser.head.url = "" 
+  parser.head.protocol.orig = ""
+  parser.head.protocol.major = 0
+  parser.head.protocol.minor = 0
+  parser.head.headers.clear(modeCaseInsensitive) 
 
 proc parseOnInitHead(parser: var ResponseParser) {.inline.} = 
-  parser.statusCode = 200
-  parser.statusMessage = ""
-  parser.protocol.orig = ""
-  parser.protocol.major = 0
-  parser.protocol.minor = 0
-  parser.headers.clear(modeCaseInsensitive) 
+  parser.head.statusCode = 200
+  parser.head.statusMessage = ""
+  parser.head.protocol.orig = ""
+  parser.head.protocol.major = 0
+  parser.head.protocol.minor = 0
+  parser.head.headers.clear(modeCaseInsensitive) 
 
 proc parseProtocol(parser: var RequestParser) {.inline.} =
-  parseRequestProtocol(line.base, parser.reqMethod, parser.url, parser.protocol)
+  parseRequestProtocol(line.base, parser.head.reqMethod, parser.head.url, parser.head.protocol)
 
 proc parseProtocol(parser: var ResponseParser) {.inline.} = 
-  parseResponseProtocol(line.base, parser.statusCode, parser.statusMessage, parser.protocol)
+  parseResponseProtocol(line.base, parser.head.statusCode, parser.head.statusMessage, parser.head.protocol)
 
 iterator parse*(parser: var RequestParser, buf: pointer, size: int): RequestState =
   for state in parser.parse0(buf, size):
     case state
     of statHead: 
-      if parser.headers.hasKey("Expect"):
-        if "100-continue" in parser.headers["Expect"]: 
+      if parser.head.headers.hasKey("Expect"):
+        if "100-continue" in parser.head.headers["Expect"]: 
           yield statReqExpect100Continue
         else:
           yield statReqExceptOther
@@ -346,27 +352,11 @@ iterator parse*(parser: var ResponseParser, buf: pointer, size: int): ResponseSt
     of statUpgrade: yield statResUpgrade
     of statError: yield statResError
 
-proc getHead*(parser: RequestParser): tuple[
-  reqMethod: string, 
-  url: string,
-  protocol: tuple[orig: string, major, minor: int], 
-  headers: StringTableRef
-] =
-  result.reqMethod = parser.reqMethod 
-  result.url = parser.url
-  result.protocol = parser.protocol
-  result.headers = parser.headers
+proc getHead*(parser: RequestParser): RequestHead =
+  parser.head
   
-proc getHead*(parser: ResponseParser): tuple[
-  statusCode: int, 
-  statusMessage: string,
-  protocol: tuple[orig: string, major, minor: int], 
-  headers: StringTableRef
-] =
-  result.statusCode = parser.statusCode
-  result.statusMessage = parser.statusMessage
-  result.protocol = parser.protocol
-  result.headers = parser.headers
+proc getHead*(parser: ResponseParser): ResponseHead =
+  parser.head
 
 proc getData*(parser: RequestParser | ResponseParser): tuple[offset: int, size: int] =
   result.offset = chunk.pos
@@ -375,6 +365,5 @@ proc getData*(parser: RequestParser | ResponseParser): tuple[offset: int, size: 
 proc getRemainPacket*(parser: RequestParser | ResponseParser): tuple[offset: int, size: int] =
   result.offset = chunk.pos
   result.size = chunk.size - chunk.pos
-
 
 
