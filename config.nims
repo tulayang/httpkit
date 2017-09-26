@@ -10,7 +10,6 @@ proc reGenDoc(filename: string) =
               """href="https://github.com/tulayang/httpkit/edit/master/httpkit""" ))
 
 template runTest(name: string) =
-  # TODO: windows tests
   withDir thisDir():
     mkDir "bin"
     --r
@@ -18,21 +17,6 @@ template runTest(name: string) =
     --verbosity:0
     --path:"""."""
     setCommand "c", "test/" & name & ".nim"
-
-template runBenchmark(name: string) =
-  # TODO: windows tests
-  withDir thisDir():
-    mkDir "bin"
-    --r
-    --o:"""bin/""" name
-    --verbosity:1
-    --path:"""."""
-    setCommand "c", "benchmark/" & name & ".nim"
-
-task build, "Compile node into a library":
-  --app:lib
-  --d:release
-  setCommand "c", "node"
 
 task doc, "Generate documentation":
   for name in [
@@ -51,15 +35,3 @@ task doc, "Generate documentation":
 
 task test, "Run test tests":
   runTest "test"
-
-task test_buffer, "Run buffer tests":
-  runTest "test_buffer"
-
-task test_http, "Run http tests":
-  runTest "test_http"
-
-task bench_stdlib_asynchttpserver, "Run stdlib asynchttpserver benchmark":
-  runBenchmark "bench_stdlib_asynchttpserver"
-
-task bench_httpserver, "Run http server benchmark":
-  runBenchmark "bench_httpserver"
